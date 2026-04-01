@@ -1,4 +1,3 @@
-
 import streamlit as st
 import fastf1
 from fastf1 import plotting
@@ -79,4 +78,29 @@ if st.session_state.session_data:
 
             # 1. Velocità
             ax[0].plot(t1['Distance'], t1['Speed'], color=c1, label=f"{l1['Driver']} (G{l1['LapNumber']})")
-            ax[0].plot(t2['Distance'], t2['Speed'], color=c2, label=f"{l2['Driver
+            ax[0].plot(t2['Distance'], t2['Speed'], color=c2, label=f"{l2['Driver']} (G{l2['LapNumber']})")
+            ax[0].set_ylabel("Velocità (km/h)")
+            ax[0].legend(loc="upper right")
+            ax[0].grid(True, alpha=0.3)
+
+            # 2. Acceleratore
+            ax[1].plot(t1['Distance'], t1['Throttle'], color=c1)
+            ax[1].plot(t2['Distance'], t2['Throttle'], color=c2)
+            ax[1].set_ylabel("Gas %")
+            ax[1].grid(True, alpha=0.3)
+
+            # 3. Freno
+            ax[2].plot(t1['Distance'], t1['Brake']*100, color=c1)
+            ax[2].plot(t2['Distance'], t2['Brake']*100, color=c2)
+            ax[2].set_ylabel("Freno %")
+            ax[2].set_xlabel("Distanza (m)")
+            ax[2].grid(True, alpha=0.3)
+
+            st.pyplot(fig)
+            
+            # Riepilogo Tempi
+            st.info(f"⏱️ **{l1['Driver']}**: {format_time(l1['LapTime'])}  |  **{l2['Driver']}**: {format_time(l2['LapTime'])}")
+    else:
+        st.warning("Seleziona e clicca 'Fissa' su entrambi gli slot per vedere il confronto.")
+else:
+    st.info("Configura la sessione nella sidebar e clicca 'CARICA SESSIONE'.")
