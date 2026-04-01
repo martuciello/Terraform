@@ -1,61 +1,49 @@
 import streamlit as st
 import fastf1
-from fastf1 import plotting
-import matplotlib.pyplot as plt
+import pandas as pd
 
-# Configurazione pagina per Mobile
-st.set_page_config(page_title="F1 Energy Analyzer", layout="wide")
-plotting.setup_mpl()
+st.set_page_config(page_title="F1 Session Analyzer", layout="wide")
+st.title("🏁 F1 Strategic Session Overview")
 
-st.title("⚡ F1 2026 Energy & Clipping Analyzer")
-st.write("Analizza chi gestisce meglio la batteria confrontando la telemetria.")
+# Sidebar per la selezione
+st.sidebar.header("Parametri Ricerca")
+year = st.sidebar.selectbox("Anno", [2026, 2025, 2024], index=0)
+gp = st.sidebar.text_input("Nome GP o Numero (es. 1)", value="1")
+stype = st.sidebar.selectbox("Sessione", ["R", "Q", "FP1", "FP2", "FP3"])
 
-# Sidebar per i controlli
-st.sidebar.header("Impostazioni Sessione")
-year = st.sidebar.number_input("Anno", min_value=2024, max_value=2026, value=2026)
-gp = st.sidebar.text_input("Gran Premio (es. Bahrain o 1)", value="1")
-session_type = st.sidebar.selectbox("Sessione", ["R", "Q", "FP1", "FP2", "FP3"])
+if st.sidebar.button("Carica Sessione"):
+    with st.spinner("Caricamento in corso..."):
+        session = fastf1.get_session(year, gp, stype)
+        session.load(laps=True, telemetry=False, weather=False)
+        
+        # --- SEZIONE 1: RIEPILOGO MIGLIORI GIRI ---
+        st.header(f"Migliori Tempi: {session.event['EventName']}")
+        
+        # Estraiamo il miglior giro per ogni pilota
+        best_laps = session.laps.pick_quickest_per_driver().reset_index()
+        summary = best_laps[['Driver', 'LapTime', 'Compound', 'TyreLife']].sort_values(by='LapTime')
+        
+        # Formattazione tempi per renderli leggibili
+        summary['LapTime'] = summary['LapTime'].dt.total_seconds().apply(lambda x: f"{int(x//60)}:{x%60:06.3f}")
+        
+        st.table(summary)
 
-d1 = st.sidebar.text_input("Pilota 1 (Sigla)", value="VER").upper()
-d2 = st.sidebar.text_input("Pilota 2 (Sigla)", value="HAM").upper()
+        # --- SEZIONE 2: DETTAGLIO PILOTA ---
+        st.divider()
+        driver_choice = st.selectbox("Seleziona un pilota per vedere tutti i suoi giri:", session.laps['Driver'].unique())
+        
+        if driver_choice:
+            st.subheader(f"Analisi Completa: {driver_choice}")
+            driver_laps = session.laps.pick_driver(driver_choice).reset_index()
+            
+            # Selezione colonne per i parziali
+            details = driver_laps[['LapNumber', 'LapTime', 'Sector1Time', 'Sector2Time', 'Sector3Time', 'Compound', 'TyreLife']]
+            
+            # Convertiamo i tempi in formato leggibile (mm:ss.ms)
+            for col in ['LapTime', 'Sector1Time', 'Sector2Time', 'Sector3Time']:
+                details[col] = details[col].dt.total_seconds()
+            
+            st.dataframe(details.style.highlight_min(subset=['Sector1Time', 'Sector2Time', 'Sector3Time'], color='lightgreen'))
 
-if st.button("Analizza Dati"):
-    with st.spinner("Scaricando i dati dalla telemetria..."):
-        try:
-            # Caricamento dati
-            session = fastf1.get_session(year, gp, session_type)
-            session.load()
-            
-            l1 = session.laps.pick_driver(d1).pick_fastest()
-            l2 = session.laps.pick_driver(d2).pick_fastest()
-            
-            t1 = l1.get_telemetry().add_distance()
-            t2 = l2.get_telemetry().add_distance()
-            
-            # Creazione Grafico
-            fig, ax = plt.subplots(3, 1, figsize=(10, 12))
-            
-            # 1. Velocità e Clipping
-            ax[0].plot(t1['Distance'], t1['Speed'], label=d1, color='cyan')
-            ax[0].plot(t2['Distance'], t2['Speed'], label=d2, color='magenta')
-            ax[0].set_ylabel("Velocità (km/h)")
-            ax[0].set_title("Analisi Clipping (Fine Rettilineo)")
-            ax[0].legend()
-            
-            # 2. Gas (Ricarica forzata o Lift & Coast)
-            ax[1].plot(t1['Distance'], t1['Throttle'], color='cyan')
-            ax[1].plot(t2['Distance'], t2['Throttle'], color='magenta')
-            ax[1].set_ylabel("Gas %")
-            
-            # 3. Freno (Recupero MGU-K)
-            ax[2].plot(t1['Distance'], t1['Brake'], color='cyan')
-            ax[2].plot(t2['Distance'], t2['Brake'], color='magenta')
-            ax[2].set_ylabel("Freno")
-            ax[2].set_xlabel("Distanza (m)")
+st.info("Ricorda: Il file 'requirements.txt' deve contenere: fastf1, streamlit, pandas")
 
-            st.pyplot(fig)
-            
-            st.success("Analisi completata! Se vedi la velocità piatta col gas al 100%, la batteria è vuota.")
-            
-        except Exception as e:
-            st.error(f"Errore nel caricamento: {e}")
