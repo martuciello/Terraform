@@ -1,13 +1,11 @@
 import streamlit as st
 import fastf1
-from fastf1 import plotting
 import pandas as pd
-import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-# Setup grafico F1
-plotting.setup_mpl()
-st.set_page_config(page_title="F1 Comparison Tool", layout="wide")
-st.title("⚔️ F1 Telemetry Comparison Tool")
+st.set_page_config(page_title="F1 Pro Analyzer", layout="wide")
+st.title("🏎️ F1 Strategic & Interactive Telemetry")
 
 def format_time(td):
     if pd.isnull(td): return "N/A"
@@ -26,81 +24,86 @@ available_gps = get_calendar(year)
 gp_choice = st.sidebar.selectbox("Gran Premio", available_gps)
 stype = st.sidebar.selectbox("Sessione", ["R", "Q", "FP1", "FP2", "FP3"])
 
-# Inizializzazione Memoria
 if 'session_data' not in st.session_state:
     st.session_state.session_data = None
 if 'comp_laps' not in st.session_state:
     st.session_state.comp_laps = {"Slot 1": None, "Slot 2": None}
 
-if st.sidebar.button("🚀 CARICA SESSIONE"):
-    with st.spinner("Scaricando dati e telemetria..."):
+if st.sidebar.button("🚀 CARICA/AGGIORNA SESSIONE"):
+    with st.spinner("Scaricando dati completi..."):
         session = fastf1.get_session(year, gp_choice, stype)
         session.load()
         st.session_state.session_data = session
-        st.session_state.comp_laps = {"Slot 1": None, "Slot 2": None} # Reset quando cambi GP
 
-# --- INTERFACCIA DI CONFRONTO ---
+# --- MAIN INTERFACE CON TAB ---
 if st.session_state.session_data:
     session = st.session_state.session_data
-    
-    col_sel1, col_sel2 = st.columns(2)
-    
-    # Selezione per i due slot
-    for i, col in enumerate([col_sel1, col_sel2], 1):
-        slot = f"Slot {i}"
-        with col:
-            st.subheader(f"Configura {slot}")
-            drivers = sorted(session.laps['Driver'].unique())
-            driver = st.selectbox(f"Pilota {i}", drivers, key=f"dr{i}")
-            
-            d_laps = session.laps.pick_driver(driver).dropna(subset=['LapTime'])
-            lap_num = st.selectbox(f"Giro {i}", d_laps['LapNumber'].unique(), key=f"lp{i}")
-            
-            if st.button(f"Fissa in {slot}", use_container_width=True):
-                st.session_state.comp_laps[slot] = d_laps[d_laps['LapNumber'] == lap_num].iloc[0]
-                st.toast(f"Giro {lap_num} di {driver} caricato!")
+    tab1, tab2 = st.tabs(["📊 Riepilogo Sessione", "⚔️ Confronto Telemetria"])
 
-    # --- GENERAZIONE GRAFICO ---
-    st.divider()
-    l1 = st.session_state.comp_laps["Slot 1"]
-    l2 = st.session_state.comp_laps["Slot 2"]
+    with tab1:
+        st.header(f"Classifica Sessione: {gp_choice}")
+        laps = session.laps.dropna(subset=['LapTime'])
+        
+        # Riepilogo Migliori Giri
+        summary = laps.sort_values(by='LapTime').groupby('Driver').first().reset_index()
+        summary = summary[['Driver', 'LapTime', 'Compound', 'TyreLife']].sort_values(by='LapTime')
+        view_summary = summary.copy()
+        view_summary['LapTime'] = view_summary['LapTime'].apply(format_time)
+        st.table(view_summary)
 
-    if l1 is not None and l2 is not None:
-        with st.spinner("Generando i grafici..."):
+        st.divider()
+        # Dettaglio Singolo Pilota
+        driver_list = sorted(session.laps['Driver'].unique())
+        d_choice = st.selectbox("Dettaglio Giri Pilota:", driver_list)
+        if d_choice:
+            d_laps = session.laps.pick_driver(d_choice).reset_index()
+            details = d_laps[['LapNumber', 'LapTime', 'Sector1Time', 'Sector2Time', 'Sector3Time', 'Compound', 'TyreLife']].copy()
+            for col in ['LapTime', 'Sector1Time', 'Sector2Time', 'Sector3Time']:
+                details[col] = details[col].apply(format_time)
+            st.dataframe(details, use_container_width=True)
+
+    with tab2:
+        st.header("Confronto Telemetria Interattivo")
+        c1, c2 = st.columns(2)
+        
+        for i, col in enumerate([c1, c2], 1):
+            with col:
+                dr = st.selectbox(f"Pilota {i}", sorted(session.laps['Driver'].unique()), key=f"d{i}")
+                # Creiamo una lista di stringhe "Giro X - Tempo" per il selettore
+                all_laps = session.laps.pick_driver(dr).dropna(subset=['LapTime'])
+                lap_options = {f"Giro {int(row['LapNumber'])} - {format_time(row['LapTime'])}": row['LapNumber'] for _, row in all_laps.iterrows()}
+                
+                selected_label = st.selectbox(f"Seleziona Giro {i}", list(lap_options.keys()), key=f"l{i}")
+                if st.button(f"Fissa {dr} in Slot {i}", use_container_width=True):
+                    st.session_state.comp_laps[f"Slot {i}"] = all_laps[all_laps['LapNumber'] == lap_options[selected_label]].iloc[0]
+
+        # --- GRAFICO PLOTLY ---
+        l1 = st.session_state.comp_laps["Slot 1"]
+        l2 = st.session_state.comp_laps["Slot 2"]
+
+        if l1 is not None and l2 is not None:
             t1 = l1.get_telemetry().add_distance()
             t2 = l2.get_telemetry().add_distance()
-            
-            # Colori: Ciano e Magenta per contrasto massimo
-            c1, c2 = 'cyan', 'magenta'
-            
-            fig, ax = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
-            plt.subplots_adjust(hspace=0.1)
 
-            # 1. Velocità
-            ax[0].plot(t1['Distance'], t1['Speed'], color=c1, label=f"{l1['Driver']} (G{l1['LapNumber']})")
-            ax[0].plot(t2['Distance'], t2['Speed'], color=c2, label=f"{l2['Driver']} (G{l2['LapNumber']})")
-            ax[0].set_ylabel("Velocità (km/h)")
-            ax[0].legend(loc="upper right")
-            ax[0].grid(True, alpha=0.3)
+            fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.05,
+                                subplot_titles=("Velocità (km/h)", "Acceleratore (%)", "Freno (%)"))
 
-            # 2. Acceleratore
-            ax[1].plot(t1['Distance'], t1['Throttle'], color=c1)
-            ax[1].plot(t2['Distance'], t2['Throttle'], color=c2)
-            ax[1].set_ylabel("Gas %")
-            ax[1].grid(True, alpha=0.3)
+            # Velocità
+            fig.add_trace(go.Scatter(x=t1['Distance'], y=t1['Speed'], name=f"{l1['Driver']}", line=dict(color='cyan')), row=1, col=1)
+            fig.add_trace(go.Scatter(x=t2['Distance'], y=t2['Speed'], name=f"{l2['Driver']}", line=dict(color='magenta')), row=1, col=1)
 
-            # 3. Freno
-            ax[2].plot(t1['Distance'], t1['Brake']*100, color=c1)
-            ax[2].plot(t2['Distance'], t2['Brake']*100, color=c2)
-            ax[2].set_ylabel("Freno %")
-            ax[2].set_xlabel("Distanza (m)")
-            ax[2].grid(True, alpha=0.3)
+            # Gas
+            fig.add_trace(go.Scatter(x=t1['Distance'], y=t1['Throttle'], name=f"{l1['Driver']} Gas", line=dict(color='cyan'), showlegend=False), row=2, col=1)
+            fig.add_trace(go.Scatter(x=t2['Distance'], y=t2['Throttle'], name=f"{l2['Driver']} Gas", line=dict(color='magenta'), showlegend=False), row=2, col=1)
 
-            st.pyplot(fig)
-            
-            # Riepilogo Tempi
-            st.info(f"⏱️ **{l1['Driver']}**: {format_time(l1['LapTime'])}  |  **{l2['Driver']}**: {format_time(l2['LapTime'])}")
-    else:
-        st.warning("Seleziona e clicca 'Fissa' su entrambi gli slot per vedere il confronto.")
+            # Freno
+            fig.add_trace(go.Scatter(x=t1['Distance'], y=t1['Brake']*100, name=f"{l1['Driver']} Freno", line=dict(color='cyan'), showlegend=False), row=3, col=1)
+            fig.add_trace(go.Scatter(x=t2['Distance'], y=t2['Brake']*100, name=f"{l2['Driver']} Freno", line=dict(color='magenta'), showlegend=False), row=3, col=1)
+
+            fig.update_layout(height=800, hovermode="x unified", template="plotly_dark",
+                              title=f"Confronto: {l1['Driver']} vs {l2['Driver']}")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Scegli due piloti e i rispettivi giri, poi clicca 'Fissa' per vedere il confronto.")
 else:
-    st.info("Configura la sessione nella sidebar e clicca 'CARICA SESSIONE'.")
+    st.info("Configura la sessione nella sidebar e clicca 'CARICA DATI'.")
