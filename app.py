@@ -2,48 +2,62 @@ import streamlit as st
 import fastf1
 import pandas as pd
 
-st.set_page_config(page_title="F1 Session Analyzer", layout="wide")
+st.set_page_config(page_title="F1 Strategic Overview", layout="wide")
 st.title("🏁 F1 Strategic Session Overview")
 
-# Sidebar per la selezione
-st.sidebar.header("Parametri Ricerca")
-year = st.sidebar.selectbox("Anno", [2026, 2025, 2024], index=0)
-gp = st.sidebar.text_input("Nome GP o Numero (es. 1)", value="1")
-stype = st.sidebar.selectbox("Sessione", ["R", "Q", "FP1", "FP2", "FP3"])
+# 1. Selezione Anno (Prima di tutto, per caricare il calendario giusto)
+year = st.sidebar.selectbox("Seleziona Anno", [2026, 2025, 2024], index=0)
 
-if st.sidebar.button("Carica Sessione"):
-    with st.spinner("Caricamento in corso..."):
-        session = fastf1.get_session(year, gp, stype)
-        session.load(laps=True, telemetry=False, weather=False)
-        
-        # --- SEZIONE 1: RIEPILOGO MIGLIORI GIRI ---
-        st.header(f"Migliori Tempi: {session.event['EventName']}")
-        
-        # Estraiamo il miglior giro per ogni pilota
-        best_laps = session.laps.pick_quickest_per_driver().reset_index()
-        summary = best_laps[['Driver', 'LapTime', 'Compound', 'TyreLife']].sort_values(by='LapTime')
-        
-        # Formattazione tempi per renderli leggibili
-        summary['LapTime'] = summary['LapTime'].dt.total_seconds().apply(lambda x: f"{int(x//60)}:{x%60:06.3f}")
-        
-        st.table(summary)
+@st.cache_data # Memorizza il calendario per non scaricarlo ogni volta
+def get_calendar(year):
+    schedule = fastf1.get_event_schedule(year)
+    # Filtriamo solo gli eventi che sono veri GP (escludiamo i Test se vuoi)
+    return schedule[schedule['EventFormat'] != 'testing']['EventName'].tolist()
 
-        # --- SEZIONE 2: DETTAGLIO PILOTA ---
-        st.divider()
-        driver_choice = st.selectbox("Seleziona un pilota per vedere tutti i suoi giri:", session.laps['Driver'].unique())
-        
-        if driver_choice:
-            st.subheader(f"Analisi Completa: {driver_choice}")
-            driver_laps = session.laps.pick_driver(driver_choice).reset_index()
+try:
+    available_gps = get_calendar(year)
+    
+    # 2. Sidebar con i GP disponibili presi da FastF1
+    gp_choice = st.sidebar.selectbox("Seleziona Gran Premio", available_gps)
+    stype = st.sidebar.selectbox("Sessione", ["R", "Q", "FP1", "FP2", "FP3"])
+
+    if st.sidebar.button("🚀 CARICA DATI", use_container_width=True):
+        with st.spinner(f"Scaricando i dati di {gp_choice}..."):
+            session = fastf1.get_session(year, gp_choice, stype)
+            session.load()
             
-            # Selezione colonne per i parziali
-            details = driver_laps[['LapNumber', 'LapTime', 'Sector1Time', 'Sector2Time', 'Sector3Time', 'Compound', 'TyreLife']]
-            
-            # Convertiamo i tempi in formato leggibile (mm:ss.ms)
-            for col in ['LapTime', 'Sector1Time', 'Sector2Time', 'Sector3Time']:
-                details[col] = details[col].dt.total_seconds()
-            
-            st.dataframe(details.style.highlight_min(subset=['Sector1Time', 'Sector2Time', 'Sector3Time'], color='lightgreen'))
+            if len(session.laps) == 0:
+                st.warning("Sessione non ancora disponibile o senza dati.")
+            else:
+                st.header(f"Risultati: {gp_choice} ({year})")
+                
+                # --- CLASSIFICA MIGLIORI GIRI ---
+                best_laps = session.laps.pick_quickest_per_driver()
+                summary = best_laps[['Driver', 'LapTime', 'Compound', 'TyreLife']].copy()
+                summary = summary.sort_values(by='LapTime').reset_index(drop=True)
+                
+                def format_time(td):
+                    if pd.isnull(td): return "N/A"
+                    ts = td.total_seconds()
+                    return f"{int(ts//60)}:{ts%60:06.3f}"
 
-st.info("Ricorda: Il file 'requirements.txt' deve contenere: fastf1, streamlit, pandas")
+                summary['LapTime'] = summary['LapTime'].apply(format_time)
+                st.subheader("Tabella Tempi e Mescole")
+                st.table(summary)
 
+                # --- DETTAGLIO PILOTA ---
+                st.divider()
+                driver_list = sorted(session.laps['Driver'].unique())
+                driver_choice = st.selectbox("Analisi dettagliata Pilota:", driver_list)
+                
+                if driver_choice:
+                    driver_laps = session.laps.pick_driver(driver_choice).reset_index()
+                    details = driver_laps[['LapNumber', 'LapTime', 'Sector1Time', 'Sector2Time', 'Sector3Time', 'Compound', 'TyreLife']].copy()
+                    
+                    for col in ['LapTime', 'Sector1Time', 'Sector2Time', 'Sector3Time']:
+                        details[col] = details[col].apply(format_time)
+                    
+                    st.dataframe(details, use_container_width=True)
+
+except Exception as e:
+    st.error(f"Errore nel caricamento del calendario: {e}")
