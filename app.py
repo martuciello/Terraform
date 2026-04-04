@@ -4,9 +4,10 @@ import fastf1
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import numpy as np
 
-st.set_page_config(page_title="F1 Pro Telemetry & Track", layout="wide")
-st.title("🏎️ F1 Interactive: Telemetry + Track Map")
+st.set_page_config(page_title="F1 Energy Predictor", layout="wide")
+st.title("🔋 F1 2026 Energy & Telemetry Pro")
 
 def format_time(td):
     if pd.isnull(td): return "N/A"
@@ -15,11 +16,9 @@ def format_time(td):
 
 # --- SIDEBAR ---
 year = st.sidebar.selectbox("Anno", [2026, 2025, 2024], index=0)
-
 @st.cache_data
 def get_calendar(year):
-    schedule = fastf1.get_event_schedule(year)
-    return schedule[schedule['EventFormat'] != 'testing']['EventName'].tolist()
+    return fastf1.get_event_schedule(year)['EventName'].tolist()
 
 available_gps = get_calendar(year)
 gp_choice = st.sidebar.selectbox("Gran Premio", available_gps)
@@ -30,80 +29,76 @@ if 'session_data' not in st.session_state:
 if 'comp_laps' not in st.session_state:
     st.session_state.comp_laps = {"Slot 1": None, "Slot 2": None}
 
-if st.sidebar.button("🚀 CARICA/AGGIORNA SESSIONE"):
-    with st.spinner("Scaricando dati completi..."):
+if st.sidebar.button("🚀 CARICA SESSIONE"):
+    with st.spinner("Download dati..."):
         session = fastf1.get_session(year, gp_choice, stype)
         session.load()
         st.session_state.session_data = session
 
-# --- INTERFACCIA ---
 if st.session_state.session_data:
     session = st.session_state.session_data
-    tab1, tab2 = st.tabs(["📊 Riepilogo", "⚔️ Confronto + Mappa"])
+    tab1, tab2, tab3 = st.tabs(["📊 Classifica", "⚔️ Telemetria & Mappa", "🔋 Simulazione Batteria"])
 
+    # --- TAB 1: RIEPILOGO ---
     with tab1:
-        st.header(f"Classifica: {gp_choice}")
         laps = session.laps.dropna(subset=['LapTime'])
         summary = laps.sort_values(by='LapTime').groupby('Driver').first().reset_index()
-        summary = summary[['Driver', 'LapTime', 'Compound', 'TyreLife']].sort_values(by='LapTime')
-        view_summary = summary.copy()
-        view_summary['LapTime'] = view_summary['LapTime'].apply(format_time)
-        st.table(view_summary)
+        st.table(summary[['Driver', 'LapTime', 'Compound']].sort_values(by='LapTime'))
 
+    # --- TAB 2: TELEMETRIA (Layout corretto) ---
     with tab2:
-        st.header("Confronto Telemetria e Posizione su Mappa")
         c1, c2 = st.columns(2)
-        
         for i, col in enumerate([c1, c2], 1):
             with col:
                 dr = st.selectbox(f"Pilota {i}", sorted(session.laps['Driver'].unique()), key=f"d{i}")
                 all_laps = session.laps.pick_driver(dr).dropna(subset=['LapTime'])
-                lap_options = {f"Giro {int(row['LapNumber'])} - {format_time(row['LapTime'])}": row['LapNumber'] for _, row in all_laps.iterrows()}
-                selected_label = st.selectbox(f"Giro {i}", list(lap_options.keys()), key=f"l{i}")
-                if st.button(f"Fissa Slot {i}", use_container_width=True):
-                    st.session_state.comp_laps[f"Slot {i}"] = all_laps[all_laps['LapNumber'] == lap_options[selected_label]].iloc[0]
+                lap_labels = {f"G {int(r['LapNumber'])} - {format_time(r['LapTime'])}": r['LapNumber'] for _, r in all_laps.iterrows()}
+                sel = st.selectbox(f"Giro {i}", list(lap_labels.keys()), key=f"l{i}")
+                if st.button(f"Fissa {i}", use_container_width=True):
+                    st.session_state.comp_laps[f"Slot {i}"] = all_laps[all_laps['LapNumber'] == lap_labels[sel]].iloc[0]
 
-        l1 = st.session_state.comp_laps["Slot 1"]
-        l2 = st.session_state.comp_laps["Slot 2"]
-
+        l1, l2 = st.session_state.comp_laps["Slot 1"], st.session_state.comp_laps["Slot 2"]
         if l1 is not None and l2 is not None:
-            # Recupero telemetria e coordinate X, Y
-            t1 = l1.get_telemetry().add_distance()
-            t2 = l2.get_telemetry().add_distance()
-
-            # Creiamo i subplot: 3 per la telemetria + 1 grande per la mappa
-            fig = make_subplots(
-                rows=2, cols=2,
-                column_widths=[0.7, 0.3],
-                row_heights=[0.5, 0.5],
-                specs=[[{"rowspan": 2}, {"type": "xy"}], [None, {"type": "xy"}]], # Layout custom
-                subplot_titles=("Telemetria Sovrapposta", "Mappa del Tracciato"),
-                vertical_spacing=0.1
-            )
+            t1, t2 = l1.get_telemetry().add_distance(), l2.get_telemetry().add_distance()
             
-            # --- PARTE TELEMETRIA (A SINISTRA) ---
-            # Nota: Per semplicità in mobile usiamo un grafico unico con più linee
-            fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03,
-                                subplot_titles=("Velocità", "Gas", "Freno", "Mappa X-Y"),
-                                row_heights=[0.25, 0.2, 0.2, 0.35])
-
-            # Velocità
-            fig.add_trace(go.Scatter(x=t1['Distance'], y=t1['Speed'], name=l1['Driver'], line=dict(color='cyan')), row=1, col=1)
-            fig.add_trace(go.Scatter(x=t2['Distance'], y=t2['Speed'], name=l2['Driver'], line=dict(color='magenta')), row=1, col=1)
+            # Grafico Telemetria (Espanso)
+            fig_tel = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.4, 0.3, 0.3])
+            fig_tel.add_trace(go.Scatter(x=t1['Distance'], y=t1['Speed'], name=l1['Driver'], line=dict(color='cyan')), row=1, col=1)
+            fig_tel.add_trace(go.Scatter(x=t2['Distance'], y=t2['Speed'], name=l2['Driver'], line=dict(color='magenta')), row=1, col=1)
+            fig_tel.add_trace(go.Scatter(x=t1['Distance'], y=t1['Throttle'], name="Gas "+l1['Driver'], line=dict(color='cyan', dash='dot'), showlegend=False), row=2, col=1)
+            fig_tel.add_trace(go.Scatter(x=t2['Distance'], y=t2['Throttle'], name="Gas "+l2['Driver'], line=dict(color='magenta', dash='dot'), showlegend=False), row=2, col=1)
+            fig_tel.add_trace(go.Scatter(x=t1['Distance'], y=t1['Brake']*100, name="Freno", line=dict(color='white', width=1), showlegend=False), row=3, col=1)
             
-            # Gas e Freno
-            fig.add_trace(go.Scatter(x=t1['Distance'], y=t1['Throttle'], name="Gas "+l1['Driver'], line=dict(color='cyan', dash='dot'), showlegend=False), row=2, col=1)
-            fig.add_trace(go.Scatter(x=t2['Distance'], y=t2['Throttle'], name="Gas "+l2['Driver'], line=dict(color='magenta', dash='dot'), showlegend=False), row=2, col=1)
-            fig.add_trace(go.Scatter(x=t1['Distance'], y=t1['Brake']*100, name="Freno "+l1['Driver'], line=dict(color='cyan', width=1), showlegend=False), row=3, col=1)
-            fig.add_trace(go.Scatter(x=t2['Distance'], y=t2['Brake']*100, name="Freno "+l2['Driver'], line=dict(color='magenta', width=1), showlegend=False), row=3, col=1)
+            fig_tel.update_layout(height=600, hovermode="x unified", template="plotly_dark", title="Velocità / Gas / Freno")
+            st.plotly_chart(fig_tel, use_container_width=True)
 
-            # --- MAPPA DEL TRACCIATO (A FONDO PAGINA) ---
-            fig.add_trace(go.Scatter(x=t1['X'], y=t1['Y'], name="Tracciato", line=dict(color='white', width=4), hoverinfo='skip'), row=4, col=1)
-            # Puntini che si muovono sulla mappa
-            fig.add_trace(go.Scatter(x=t1['X'], y=t1['Y'], name=l1['Driver']+" Pos", mode='markers', marker=dict(color='cyan', size=8)), row=4, col=1)
-            fig.add_trace(go.Scatter(x=t2['X'], y=t2['Y'], name=l2['Driver']+" Pos", mode='markers', marker=dict(color='magenta', size=8)), row=4, col=1)
+            # Mappa separata sotto per non comprimere i grafici
+            fig_map = go.Figure()
+            fig_map.add_trace(go.Scatter(x=t1['X'], y=t1['Y'], mode='lines', line=dict(color='gray', width=2), hoverinfo='skip'))
+            fig_map.add_trace(go.Scatter(x=t1['X'], y=t1['Y'], name=l1['Driver'], mode='markers', marker=dict(color='cyan', size=6)))
+            fig_map.update_layout(height=400, template="plotly_dark", title="Posizione sul Tracciato")
+            st.plotly_chart(fig_map, use_container_width=True)
 
-            fig.update_layout(height=1000, hovermode="x unified", template="plotly_dark")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Seleziona e 'Fissa' i due giri per attivare la telemetria e la mappa.")
+    # --- TAB 3: ALGORITMO BATTERIA ---
+    with tab3:
+        st.header("⚡ Simulazione Carica Batteria (SoC)")
+        if l1 is not None:
+            t = l1.get_telemetry().add_distance()
+            
+            # ALGORITMO: Calcolo differenziale energia
+            # Recupero (Freno) - Consumo (Gas + Velocità)
+            charge = t['Brake'] * 0.5  
+            deploy = (t['Throttle'] / 100) * (1 + (t['Speed'] / 300))
+            net_energy = charge - deploy
+            
+            # Integrazione del livello batteria (partendo da 90% in Qualifica)
+            soc = 90 + np.cumsum(net_energy) * 0.1 
+            soc = np.clip(soc, 0, 100) # Mantieni tra 0 e 100%
+
+            fig_soc = go.Figure()
+            fig_soc.add_trace(go.Scatter(x=t['Distance'], y=soc, name="Livello Batteria Estimatp", line=dict(color='yellow', width=3)))
+            fig_soc.add_trace(go.Scatter(x=t['Distance'], y=t['Speed']/3.5, name="Velocità (Rapportata)", line=dict(color='gray', dash='dash')))
+            
+            fig_soc.update_layout(height=500, template="plotly_dark", yaxis_title="Stato di Carica (%)", title=f"Stima ERS: {l1['Driver']}")
+            st.plotly_chart(fig_soc, use_container_width=True)
+            st.write("🔬 **Nota tecnica:** La ricarica avviene nei picchi negativi della velocità (frenata). Il deployment è massimo in uscita di curva.")
